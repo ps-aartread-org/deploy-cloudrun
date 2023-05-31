@@ -101,7 +101,7 @@ on:
         type: string
       githubEnvironment:
         description: 'The GitHub Environment containing the environment secrets for GOOGLE_CREDENTIALS'
-        required: true
+        required: false
         type: string
       ref:
         description: 'CommitId, Branch, or Tag containing the cloudRunEnvFile. Defaults to main.'
