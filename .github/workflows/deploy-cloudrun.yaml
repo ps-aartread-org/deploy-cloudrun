@@ -84,6 +84,8 @@ on:
         type: string
       cloudRunTag:
         description: 'Traffic tag to assign to the newly created revision'
+        required: false
+        type: boolean
       gcpAuthMethod:
         description: 'The method for authenticating with GCP. Supports workload-identity or credentials_json'
         required: true
