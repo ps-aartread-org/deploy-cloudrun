@@ -1,0 +1,344 @@
+name: Deploy Cloud Run Service
+on:
+  workflow_call:
+    inputs:
+      cloudRunEnableHealthCheck:
+        description: 'Enable HTTP Health Check Probe for startup and liveliness'
+        required: false
+        type: boolean
+        default: false
+      cloudRunEnvVars:
+        description: 'A multiline list of environment variables'
+        required: false
+        type: string
+        default: ''
+      cloudRunEnvVarsFile:
+        description: 'A file containing a list of environment variables'
+        required: false
+        type: string
+        default: ''
+      cloudRunflags:
+        description: 'Cloud Run flags for configuring Cloud Run. See https://cloud.google.com/sdk/gcloud/reference/beta/run/deploy'
+        required: true
+        type: string
+      cloudRunGcloudComponent:
+        description: 'Pin the Cloud SDK gcloud cli component version, either alpha or bet'
+        required: false
+        type: string
+        default: 'beta'
+      cloudRunHealthCheckDelay:
+        description: 'DELAY with number of seconds to wait after the container has started before performing the first probe'
+        required: false
+        type: string
+        default: '30'
+      cloudRunHealthCheckPath:
+        description: 'PATH with the relative path to the HTTP endpoint'
+        required: false
+        type: string
+        default: '/'
+      cloudRunHealthCheckPeriod:
+        description: 'PERIOD with the frequency (in seconds) to perform the probe'
+        required: false
+        type: string
+        default: '10'
+      cloudRunHealthCheckThreshold:
+        description: 'THRESHOLD with the number of times to retry the probe before marking the container as Unready'
+        required: false
+        type: string
+        default: '3'
+      cloudRunHealthCheckTimeout:
+        description: 'TIMEOUT with the number of seconds to wait until the probe times out'
+        required: false
+        type: string
+        default: '5'
+      cloudRunInvokeBindings:
+        description: 'list of iam bindings to invoke service'
+        required: false
+        type: string
+        default: ''
+      cloudRunlabels:
+        description: 'A multiline list of labels to add to Cloud Run'
+        required: false
+        type: string
+        default: ''
+      cloudRunNoTraffic:
+        description: 'If true, the newly deployed revision will not recieve traffic. default is false'
+        required: false
+        type: boolean
+        default: false
+      cloudRunSecrets:
+        description: 'A multiline list of secrets from Secret Manager'
+        required: false
+        type: string
+      cloudRunServiceName:
+        description: 'Cloud Run Service Name'
+        required: true
+        type: string
+      cloudRunTag:
+        description: 'Traffic tag to assign to the newly created revision'
+      gcpAuthMethod:
+        description: 'The method for authenticating with GCP. Supports workload-identity or credentials_json'
+        required: true
+        default: 'credentials_json'
+        type: string
+      gcpProjectId:
+        description: 'The GCP Project ID where Cloud Run will be deployed'
+        required: true
+        type: string
+      gcpServiceAccount:
+        description: 'The Service Account used by Workload Identity Federation'
+        required: false
+        type: string
+      githubEnvironment:
+        description: 'The GitHub Environment containing the environment secrets for GOOGLE_CREDENTIALS'
+        required: true
+        type: string
+      imageName:
+        description: 'The full image name including registry details'
+        required: true
+        type: string
+      imageTag:
+        description: 'The image tag'
+        required: true
+        type: string
+      regions:
+        description: ''JSON List of regions where the Cloud Run service will be deployed. I.E ["us-central1","us-east1"]'
+        required: true
+        type: string
+      workloadIdentityProvider:
+        description: 'The Workload Identity Provider Endpoint'
+        required: false
+        type: string
+
+jobs:
+  deployToCloudRun:
+    strategy:
+      matrix:
+        regions: ${{fromJson(inputs.regions)}}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.githubEnvironment }}
+    name: Deploy Cloud Run Service
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.imageTag }}
+
+      - id: auth_workload
+        if: ${{ inputs.gcp-auth-method == 'workload-identity' }}
+        name: Authenticate to Google Cloud using Workload Identity Federation
+        uses: google-github-actions/auth@v0
+        with:
+          workload_identity_provider: ${{ inputs.workfloadIdentityProvider }}
+          token_format: access_token
+          service_account: ${{ inputs.gcpServiceAccount }}
+
+      - id: auth_json
+        if: ${{ inputs.gcp-auth-method == 'credentials_json' }}
+        name: Authenticate to Google Cloud using JSON Key
+        uses: google-github-actions/auth@v0
+        with:
+          credentials_json: ${{ secrets.GOOGLE_CREDENTIALS }}
+          token_format: access_token
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          project_id: ${{ inputs.gcpProjectId }}
+          install_components: 'beta'
+
+      - name: Determine if Cloud Run Service Exists
+        id: checkservice
+        run: |
+          CLOUDRUN_CONFIG=$(gcloud run services list \
+            --region=${{ matrix.regions }} \
+            --format=yaml \
+            --filter=metadata.name=${{ matrix.regions }}-${{ inputs.cloudRunServiceName }} \
+             | yq e '.metadata.name' - )
+          echo "CLOUDRUN_CONFIG is $CLOUDRUN_CONFIG"
+          if [[ "$CLOUDRUN_CONFIG" != "null" ]] && [[ ${{inputs.cloudRunEnableHealthCheck}} == true ]]; then
+            echo "Configure Update Health Check Output"
+            echo "updatehealthcheck=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Conditionally Update HTTP Health Probes
+        if: ${{ steps.checkservice.outputs.updatehealthcheck }}
+        id: checkhealthcheck
+        run: |
+          gcloud run services describe ${{ matrix.regions }}-${{ inputs.cloudRunServiceName }} --region ${{ matrix.regions }} --format export > service.yaml
+          echo "Checking Health Check Configuration"
+          HEALTH_CHECK_PATH=$(yq e '.spec.template.spec.containers[0].startupProbe.httpGet.path' service.yaml)
+          HEALTH_CHECK_DELAY=$(yq e '.spec.template.spec.containers[0].startupProbe.initialDelaySeconds' service.yaml)
+          HEALTH_CHECK_TIMEOUT=$(yq e '.spec.template.spec.containers[0].startupProbe.timeoutSeconds' service.yaml)
+          HEALTH_CHECK_THRESHOLD=$(yq e '.spec.template.spec.containers[0].startupProbe.failureThreshold' service.yaml)
+          HEALTH_CHECK_PERIOD=$(yq e '.spec.template.spec.containers[0].startupProbe.periodSeconds' service.yaml)
+          echo "Health Check Path: $HEALTH_CHECK_PATH and ${{ inputs.cloudRunHealthCheckPath }}"
+          echo "Health Check Delay: $HEALTH_CHECK_DELAY and ${{ inputs.cloudRunHealthCheckDelay }}"
+          echo "Health Check Timeout: $HEALTH_CHECK_TIMEOUT and ${{ inputs.cloudRunHealthCheckTimeout }}"
+          echo "Health Check Threshold: $HEALTH_CHECK_THRESHOLD and ${{ inputs.cloudRunHealthCheckThreshold }}"
+          echo "Health Check Period: $HEALTH_CHECK_PERIOD and ${{ inputs.cloudRunHealthCheckPeriod }}"
+          if [ ${{ inputs.cloudRunHealthCheckPath }} != $HEALTH_CHECK_PATH ] || [ ${{ inputs.cloudRunHealthCheckDelay }} != $HEALTH_CHECK_DELAY ] || [ ${{ inputs.cloudRunHealthCheckTimeout }} != $HEALTH_CHECK_TIMEOUT ] || [ ${{ inputs.cloudRunHealthCheckThreshold }} != $HEALTH_CHECK_THRESHOLD ] || [ ${{ inputs.cloudRunHealthCheckPeriod }} != $HEALTH_CHECK_PERIOD ]; then
+            echo "Configuring Startup Probe Health Check"
+            yq e -i '.spec.template.spec.containers[0].startupProbe.httpGet.path = "'"${{ inputs.cloudRunHealthCheckPath }}"'"' service.yaml
+            yq e -i '.spec.template.spec.containers[0].startupProbe.initialDelaySeconds = "'"${{ inputs.cloudRunHealthCheckDelay }}"'"' service.yaml
+            yq e -i '.spec.template.spec.containers[0].startupProbe.timeoutSeconds = "'"${{ inputs.cloudRunHealthCheckTimeout }}"'"' service.yaml
+            yq e -i '.spec.template.spec.containers[0].startupProbe.failureThreshold = "'"${{ inputs.cloudRunHealthCheckThreshold }}"'"' service.yaml
+            yq e -i '.spec.template.spec.containers[0].startupProbe.periodSeconds = "'"${{ inputs.cloudRunHealthCheckPeriod }}"'"' service.yaml
+            yq e -i 'del(.spec.template.spec.containers[0].startupProbe.tcpSocket)' service.yaml
+            echo "Configuring Liveness Probe Health Check"
+            yq e -i '.spec.template.spec.containers[0].livenessProbe.httpGet.path = "'"${{ inputs.cloudRunHealthCheckPath }}"'"' service.yaml
+            yq e -i '.spec.template.spec.containers[0].livenessProbe.initialDelaySeconds = "'"${{ inputs.cloudRunHealthCheckDelay }}"'"' service.yaml
+            yq e -i '.spec.template.spec.containers[0].livenessProbe.timeoutSeconds = "'"${{ inputs.cloudRunHealthCheckTimeout }}"'"' service.yaml
+            yq e -i '.spec.template.spec.containers[0].livenessProbe.failureThreshold = "'"${{ inputs.cloudRunHealthCheckThreshold }}"'"' service.yaml
+            yq e -i '.spec.template.spec.containers[0].livenessProbe.periodSeconds = "'"${{ inputs.cloudRunHealthCheckPeriod }}"'"' service.yaml
+            echo "Configuring Image"
+            yq e -i '.spec.template.spec.containers[0].image = "'"${{ inputs.imageName }}:${{ inputs.imageTag }}"'"' service.yaml
+            echo "Configuring Traffic Pattern"
+            LIVE_REVISION=$(yq e '.spec.traffic[] | select(.percent == "100") | .revisionName' service.yaml)
+            if [ $LIVE_REVISION == "null" ]; then
+              echo "Live Revision is null"
+              yq e -i 'del(.spec.traffic)' service.yaml
+              yq e -i '.spec.traffic[0].percent = 100' service.yaml
+              yq e -i '.spec.traffic[0].latestRevision = true' service.yaml
+              yq e -i '.spec.traffic[1].latestRevision = true' service.yaml
+              yq e -i '.spec.traffic[1].tag = "beta"' service.yaml
+            else
+              echo "Live Revision is $LIVE_REVISION"
+              yq e -i 'del(.spec.traffic)' service.yaml
+              yq e -i '.spec.traffic[0].percent = 100' service.yaml
+              yq e -i '.spec.traffic[0].revisionName = "'"${LIVE_REVISION}"'"' service.yaml
+              yq e -i '.spec.traffic[1].latestRevision = true' service.yaml
+              yq e -i '.spec.traffic[1].tag = "beta"' service.yaml
+            fi
+            echo "Removing Revision Name in Template Metadata"
+            yq e -i 'del(.spec.template.metadata.name)' service.yaml
+            cat service.yaml
+            gcloud beta run services replace service.yaml
+          else
+            echo "No Changes to Health Check Configuration....Skipping"
+          fi
+          echo "Configure HTTP Health Probes TO NOT RUN!"
+          SKIP_HEALTHCHECK_CONFIG=$(yq e '.spec.template.spec.containers[0].startupProbe' service.yaml)
+          if [[ ! -z $SKIP_HEALTHCHECK_CONFIG ]]; then
+            echo "Health Check Config Exists....Skipping Configure HTTP Health Probes step"
+            echo "skiphealthcheck=true" >> $GITHUB_OUTPUT
+          fi
+
+
+      - name: Deploy Cloud Run Service
+        uses: 'google-github-actions/deploy-cloudrun@v1'
+        with:
+          service: ${{ matrix.regions }}-${{ inputs.cloudRunServiceName }}
+          image: ${{ inputs.imageName }}:${{ inputs.imageTag }}
+          region: ${{ matrix.regions }}
+          gcloud_component: ${{ inputs.cloudRunGcloudComponenet }}
+          flags: ${{ inputs.cloudRunFlags }}
+          tag: ${{ inputs.cloudRunTag }}
+          no_traffic: ${{ inputs.cloudRunNoTraffic }}
+          env_vars: |
+            ${{ inputs.cloudRunEnvVars }}
+          env_vars_file: ${{ inputs.cloudRunEnvVarsFile }}
+          secrets: |
+            ${{ inputs.cloudRunSecrets }}
+          labels: |
+            ${{ inputs.cloudRunLabels }}
+
+      - name: Configure HTTP Health Probes
+        if: ${{ inputs.cloudRunEnableHealthCheck && ! steps.checkhealthcheck.outputs.skiphealthcheck }}
+        run: |
+          gcloud run services describe ${{ matrix.regions }}-${{ inputs.cloudRunServiceName }} --region ${{ matrix.regions }} --format export > service.yaml
+          echo "Configuring Startup Probe Health Check"
+          yq e -i '.spec.template.spec.containers[0].startupProbe.httpGet.path = "'"${{ inputs.cloudRunHealthCheckPath }}"'"' service.yaml
+          yq e -i '.spec.template.spec.containers[0].startupProbe.initialDelaySeconds = "'"${{ inputs.cloudRunHealthCheckDelay }}"'"' service.yaml
+          yq e -i '.spec.template.spec.containers[0].startupProbe.timeoutSeconds = "'"${{ inputs.cloudRunHealthCheckTimeout }}"'"' service.yaml
+          yq e -i '.spec.template.spec.containers[0].startupProbe.failureThreshold = "'"${{ inputs.cloudRunHealthCheckThreshold }}"'"' service.yaml
+          yq e -i '.spec.template.spec.containers[0].startupProbe.periodSeconds = "'"${{ inputs.cloudRunHealthCheckPeriod }}"'"' service.yaml
+          echo "Configuring Liveness Probe Health Check"
+          yq e -i '.spec.template.spec.containers[0].livenessProbe.httpGet.path = "'"${{ inputs.cloudRunHealthCheckPath }}"'"' service.yaml
+          yq e -i '.spec.template.spec.containers[0].livenessProbe.initialDelaySeconds = "'"${{ inputs.cloudRunHealthCheckDelay }}"'"' service.yaml
+          yq e -i '.spec.template.spec.containers[0].livenessProbe.timeoutSeconds = "'"${{ inputs.cloudRunHealthCheckTimeout }}"'"' service.yaml
+          yq e -i '.spec.template.spec.containers[0].livenessProbe.failureThreshold = "'"${{ inputs.cloudRunHealthCheckThreshold }}"'"' service.yaml
+          yq e -i '.spec.template.spec.containers[0].livenessProbe.periodSeconds = "'"${{ inputs.cloudRunHealthCheckPeriod }}"'"' service.yaml
+          echo "Delete Service Name, TCP Socket, and Modify Traffic Routing"
+          yq e -i 'del(.spec.template.metadata.name)' service.yaml
+          yq e -i 'del(.spec.traffic)' service.yaml
+          yq e -i 'del(.spec.template.spec.containers[0].startupProbe.tcpSocket)' service.yaml
+          yq e -i '.spec.traffic[0].percent = 100 | .spec.traffic[0].latestRevision=true | .spec.traffic[0].tag="beta" ' service.yaml
+          cat service.yaml
+          gcloud beta run services replace service.yaml
+
+      - name: Manage Invoker Bindings
+        run: |
+          echo "Checking to see if bindings exist"
+          EXISTING_BINDINGS=$(gcloud run services get-iam-policy ${{ matrix.regions }}-${{ inputs.cloudRunServiceName }} --region ${{ matrix.regions }} --format="value(bindings.role)")
+          if [ ! -z $EXISTING_BINDINGS ]; then
+            echo "Bindings Exist"
+            gcloud run services get-iam-policy ${{ matrix.regions }}-${{ inputs.cloudRunServiceName }} \
+              --region ${{ matrix.regions }} \
+              --format=json \
+              | jq -r '.bindings[].members[]' >> current-bindings.txt
+            echo "------------------------------"
+            echo "The current bindings are below"
+            cat current-bindings.txt
+            echo "------------------------------"
+          else
+            echo "No Existing Bindings"
+            touch current-bindings.txt
+          fi
+          OLD_IFS=$IFS
+          IFS=
+          NEW_BINDINGS=$(cat << EOF
+          ${{ inputs.cloudRunInvokeBindings }}
+          EOF
+          )
+          echo -e $NEW_BINDINGS >> new-bindings.txt
+          IFS=$OLD_IFS
+          echo "------------------------------"
+          echo "The new bindings are below"
+          cat new-bindings.txt
+          echo "------------------------------"
+          ADD_BINDINGS=$(grep -Fxv -f current-bindings.txt new-bindings.txt || true)
+          echo "------------------------------"
+          echo "The bindings to Add are below"
+          echo "${ADD_BINDINGS}"
+          echo "------------------------------"
+          if [ ! -z "${ADD_BINDINGS}" ]; then
+            echo "Bindings to Add"
+            for binding in $ADD_BINDINGS;
+              do
+                echo "Adding binding for $binding"
+                gcloud run services add-iam-policy-binding ${{ matrix.regions }}-${{ inputs.cloudRunServiceName }} \
+                  --member="${binding}" \
+                  --role='roles/run.invoker' \
+                  --region=${{ matrix.regions }}
+              done
+          else
+            echo "No Bindings to Add"
+          fi
+          REMOVE_BINDINGS=$(grep -Fxv -f new-bindings.txt current-bindings.txt || true)
+          echo "------------------------------"
+          echo "The bindings to Remove are below"
+          echo "${REMOVE_BINDINGS}"
+          echo "------------------------------"
+          if [ ! -z "${REMOVE_BINDINGS}" ]; then
+            echo "Bindings to Remove"
+            for binding in $REMOVE_BINDINGS;
+              do
+                echo "Removing binding for $binding"
+                gcloud run services remove-iam-policy-binding ${{ matrix.regions }}-${{ inputs.cloudRunServiceName }} \
+                  --member="${binding}" \
+                  --role='roles/run.invoker' \
+                  --region=${{ matrix.regions }}
+              done
+          else
+            echo "No Bindings to Remove"
+          fi
+          echo "------------------------------"
+          echo "Getting Final Binding List"
+          FINAL_BINDINGS=$(gcloud run services get-iam-policy ${{ matrix.regions }}-${{ inputs.cloudRunServiceName }} \
+              --region ${{ matrix.regions }} \
+              --format=json \
+              | jq -r '.bindings[].members[]' || true )
+          echo "${FINAL_BINDINGS}"
+          echo "------------------------------"
+          
