@@ -51,6 +51,14 @@ on:
         required: false
         type: string
         default: '5'
+      cloudRunImageName:
+        description: 'The full image name including registry details'
+        required: true
+        type: string
+      cloudRunImageTag:
+        description: 'The image tag'
+        required: true
+        type: string
       cloudRunInvokeBindings:
         description: 'list of iam bindings to invoke service'
         required: false
@@ -93,16 +101,12 @@ on:
         description: 'The GitHub Environment containing the environment secrets for GOOGLE_CREDENTIALS'
         required: true
         type: string
-      imageName:
-        description: 'The full image name including registry details'
-        required: true
-        type: string
-      imageTag:
-        description: 'The image tag'
-        required: true
+      ref:
+        description: 'CommitId, Branch, or Tag containing the cloudRunEnvFile. Defaults to main.'
+        required: false
         type: string
       regions:
-        description: ''JSON List of regions where the Cloud Run service will be deployed. I.E ["us-central1","us-east1"]'
+        description: 'JSON List of regions where the Cloud Run service will be deployed. I.E ["us-central1","us-east1"]'
         required: true
         type: string
       workloadIdentityProvider:
@@ -122,7 +126,7 @@ jobs:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0
-          ref: ${{ inputs.imageTag }}
+          ref: ${{ inputs.ref}}
 
       - id: auth_workload
         if: ${{ inputs.gcp-auth-method == 'workload-identity' }}
@@ -192,7 +196,7 @@ jobs:
             yq e -i '.spec.template.spec.containers[0].livenessProbe.failureThreshold = "'"${{ inputs.cloudRunHealthCheckThreshold }}"'"' service.yaml
             yq e -i '.spec.template.spec.containers[0].livenessProbe.periodSeconds = "'"${{ inputs.cloudRunHealthCheckPeriod }}"'"' service.yaml
             echo "Configuring Image"
-            yq e -i '.spec.template.spec.containers[0].image = "'"${{ inputs.imageName }}:${{ inputs.imageTag }}"'"' service.yaml
+            yq e -i '.spec.template.spec.containers[0].image = "'"${{ inputs.cloudRunImageName }}:${{ inputs.cloudRunImageTag }}"'"' service.yaml
             echo "Configuring Traffic Pattern"
             LIVE_REVISION=$(yq e '.spec.traffic[] | select(.percent == "100") | .revisionName' service.yaml)
             if [ $LIVE_REVISION == "null" ]; then
@@ -229,7 +233,7 @@ jobs:
         uses: 'google-github-actions/deploy-cloudrun@v1'
         with:
           service: ${{ matrix.regions }}-${{ inputs.cloudRunServiceName }}
-          image: ${{ inputs.imageName }}:${{ inputs.imageTag }}
+          image: ${{ inputs.cloudRunImageName }}:${{ inputs.cloudRunImageTag }}
           region: ${{ matrix.regions }}
           gcloud_component: ${{ inputs.cloudRunGcloudComponenet }}
           flags: ${{ inputs.cloudRunFlags }}
