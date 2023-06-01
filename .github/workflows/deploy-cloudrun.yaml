@@ -162,6 +162,12 @@ jobs:
             --filter=metadata.name=${{ inputs.cloudRunServiceName }} \
              | yq e '.metadata.name' - )
           echo "CLOUDRUN_CONFIG is $CLOUDRUN_CONFIG"
+          if [[ "$CLOUDRUN_CONFIG" == "null" ]] && [[ ${{inputs.cloudRunNoTraffic}} == true ]]; then
+            echo "Setting No Traffic to false for initial deployment"
+            echo "notraffic=false" >> $GITHUB_OUTPUT
+          else
+            echo "notraffic=${{inputs.cloudRunNoTraffic}}" >> $GITHUB_OUTPUT
+          fi
           if [[ "$CLOUDRUN_CONFIG" != "null" ]] && [[ ${{inputs.cloudRunEnableHealthCheck}} == true ]]; then
             echo "Configure Update Health Check Output"
             echo "updatehealthcheck=true" >> $GITHUB_OUTPUT
@@ -240,7 +246,7 @@ jobs:
           gcloud_component: ${{ inputs.cloudRunGcloudComponenet }}
           flags: ${{ inputs.cloudRunFlags }}
           tag: ${{ inputs.cloudRunTag }}
-          no_traffic: ${{ inputs.cloudRunNoTraffic }}
+          no_traffic: ${{ steps.checkservice.outputs.notraffic }}
           env_vars: |
             ${{ inputs.cloudRunEnvVars }}
           env_vars_file: ${{ inputs.cloudRunEnvVarsFile }}
