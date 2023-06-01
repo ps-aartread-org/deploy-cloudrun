@@ -104,7 +104,7 @@ on:
         required: false
         type: string
       ref:
-        description: 'CommitId, Branch, or Tag containing the cloudRunEnvFile. Defaults to main.'
+        description: 'CommitId, Branch, or Tag containing the cloudRunEnvFile. Defaults to latest if not defined'
         required: false
         type: string
       regions:
@@ -159,7 +159,7 @@ jobs:
           CLOUDRUN_CONFIG=$(gcloud run services list \
             --region=${{ matrix.regions }} \
             --format=yaml \
-            --filter=metadata.name=${{ matrix.regions }}-${{ inputs.cloudRunServiceName }} \
+            --filter=metadata.name=${{ inputs.cloudRunServiceName }} \
              | yq e '.metadata.name' - )
           echo "CLOUDRUN_CONFIG is $CLOUDRUN_CONFIG"
           if [[ "$CLOUDRUN_CONFIG" != "null" ]] && [[ ${{inputs.cloudRunEnableHealthCheck}} == true ]]; then
@@ -171,7 +171,7 @@ jobs:
         if: ${{ steps.checkservice.outputs.updatehealthcheck }}
         id: checkhealthcheck
         run: |
-          gcloud run services describe ${{ matrix.regions }}-${{ inputs.cloudRunServiceName }} --region ${{ matrix.regions }} --format export > service.yaml
+          gcloud run services describe ${{ inputs.cloudRunServiceName }} --region ${{ matrix.regions }} --format export > service.yaml
           echo "Checking Health Check Configuration"
           HEALTH_CHECK_PATH=$(yq e '.spec.template.spec.containers[0].startupProbe.httpGet.path' service.yaml)
           HEALTH_CHECK_DELAY=$(yq e '.spec.template.spec.containers[0].startupProbe.initialDelaySeconds' service.yaml)
@@ -234,7 +234,7 @@ jobs:
       - name: Deploy Cloud Run Service
         uses: 'google-github-actions/deploy-cloudrun@v1'
         with:
-          service: ${{ matrix.regions }}-${{ inputs.cloudRunServiceName }}
+          service: ${{ inputs.cloudRunServiceName }}
           image: ${{ inputs.cloudRunImageName }}:${{ inputs.cloudRunImageTag }}
           region: ${{ matrix.regions }}
           gcloud_component: ${{ inputs.cloudRunGcloudComponenet }}
@@ -252,7 +252,7 @@ jobs:
       - name: Configure HTTP Health Probes
         if: ${{ inputs.cloudRunEnableHealthCheck && ! steps.checkhealthcheck.outputs.skiphealthcheck }}
         run: |
-          gcloud run services describe ${{ matrix.regions }}-${{ inputs.cloudRunServiceName }} --region ${{ matrix.regions }} --format export > service.yaml
+          gcloud run services describe ${{ inputs.cloudRunServiceName }} --region ${{ matrix.regions }} --format export > service.yaml
           echo "Configuring Startup Probe Health Check"
           yq e -i '.spec.template.spec.containers[0].startupProbe.httpGet.path = "'"${{ inputs.cloudRunHealthCheckPath }}"'"' service.yaml
           yq e -i '.spec.template.spec.containers[0].startupProbe.initialDelaySeconds = "'"${{ inputs.cloudRunHealthCheckDelay }}"'"' service.yaml
@@ -276,10 +276,10 @@ jobs:
       - name: Manage Invoker Bindings
         run: |
           echo "Checking to see if bindings exist"
-          EXISTING_BINDINGS=$(gcloud run services get-iam-policy ${{ matrix.regions }}-${{ inputs.cloudRunServiceName }} --region ${{ matrix.regions }} --format="value(bindings.role)")
+          EXISTING_BINDINGS=$(gcloud run services get-iam-policy ${{ inputs.cloudRunServiceName }} --region ${{ matrix.regions }} --format="value(bindings.role)")
           if [ ! -z $EXISTING_BINDINGS ]; then
             echo "Bindings Exist"
-            gcloud run services get-iam-policy ${{ matrix.regions }}-${{ inputs.cloudRunServiceName }} \
+            gcloud run services get-iam-policy ${{ inputs.cloudRunServiceName }} \
               --region ${{ matrix.regions }} \
               --format=json \
               | jq -r '.bindings[].members[]' >> current-bindings.txt
@@ -313,7 +313,7 @@ jobs:
             for binding in $ADD_BINDINGS;
               do
                 echo "Adding binding for $binding"
-                gcloud run services add-iam-policy-binding ${{ matrix.regions }}-${{ inputs.cloudRunServiceName }} \
+                gcloud run services add-iam-policy-binding ${{ inputs.cloudRunServiceName }} \
                   --member="${binding}" \
                   --role='roles/run.invoker' \
                   --region=${{ matrix.regions }}
@@ -331,7 +331,7 @@ jobs:
             for binding in $REMOVE_BINDINGS;
               do
                 echo "Removing binding for $binding"
-                gcloud run services remove-iam-policy-binding ${{ matrix.regions }}-${{ inputs.cloudRunServiceName }} \
+                gcloud run services remove-iam-policy-binding ${{ inputs.cloudRunServiceName }} \
                   --member="${binding}" \
                   --role='roles/run.invoker' \
                   --region=${{ matrix.regions }}
@@ -341,7 +341,7 @@ jobs:
           fi
           echo "------------------------------"
           echo "Getting Final Binding List"
-          FINAL_BINDINGS=$(gcloud run services get-iam-policy ${{ matrix.regions }}-${{ inputs.cloudRunServiceName }} \
+          FINAL_BINDINGS=$(gcloud run services get-iam-policy ${{ inputs.cloudRunServiceName }} \
               --region ${{ matrix.regions }} \
               --format=json \
               | jq -r '.bindings[].members[]' || true )
